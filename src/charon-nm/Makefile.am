@@ -1,3 +1,5 @@
+SUBDIRS = . tests
+
 ipsec_PROGRAMS = charon-nm
 
 charon_nm_SOURCES = \

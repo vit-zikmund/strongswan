@@ -2095,6 +2095,7 @@ AC_CONFIG_FILES([
 	src/libimcv/plugins/imv_hcd/Makefile
 	src/charon/Makefile
 	src/charon-nm/Makefile
+	src/charon-nm/tests/Makefile
 	src/charon-tkm/Makefile
 	src/charon-cmd/Makefile
 	src/charon-svc/Makefile
