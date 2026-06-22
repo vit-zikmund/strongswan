@@ -141,6 +141,27 @@ check_validity (StrongswanPluginUiWidget *self, GError **error)
 			}
 		}
 	}
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "server-auth-combo"));
+	if (gtk_combo_box_get_active (GTK_COMBO_BOX (widget)) == 1)
+	{
+		widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "gateway-psk-entry"));
+		switch (nma_utils_menu_to_secret_flags(widget))
+		{
+			case NM_SETTING_SECRET_FLAG_NONE:
+			case NM_SETTING_SECRET_FLAG_AGENT_OWNED:
+				str = (char *) gtk_editable_get_text (GTK_EDITABLE (widget));
+				if (str && strlen (str) < 20) {
+					g_set_error (error,
+								 STRONGSWAN_PLUGIN_UI_ERROR,
+								 STRONGSWAN_PLUGIN_UI_ERROR_INVALID_PROPERTY,
+								 "gateway pre-shared key is too short");
+					return FALSE;
+				}
+				break;
+			default:
+				break;
+		}
+	}
 	return TRUE;
 }
 
@@ -215,6 +236,17 @@ static void update_sensitive (StrongswanPluginUiWidgetPrivate *priv)
 
 }
 
+static void update_server_sensitive (StrongswanPluginUiWidgetPrivate *priv)
+{
+	GtkWidget *widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "server-auth-combo"));
+	gboolean psk = gtk_combo_box_get_active (GTK_COMBO_BOX (widget)) == 1;
+
+	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "certificate-label")), !psk);
+	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "certificate-button")), !psk);
+	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "gateway-psk-label")), psk);
+	gtk_widget_set_sensitive (GTK_WIDGET (gtk_builder_get_object (priv->builder, "gateway-psk-entry")), psk);
+}
+
 static void
 settings_changed_cb (GtkWidget *widget, gpointer user_data)
 {
@@ -225,6 +257,10 @@ settings_changed_cb (GtkWidget *widget, gpointer user_data)
 		widget == GTK_WIDGET (gtk_builder_get_object (priv->builder, "cert-combo")))
 	{
 		update_sensitive (priv);
+	}
+	if (widget == GTK_WIDGET (gtk_builder_get_object (priv->builder, "server-auth-combo")))
+	{
+		update_server_sensitive (priv);
 	}
 	g_signal_emit_by_name (STRONGSWAN_PLUGIN_UI_WIDGET (user_data), "changed");
 }
@@ -239,6 +275,9 @@ show_toggled_cb (GtkCheckButton *button, StrongswanPluginUiWidget *self)
 	visible = gtk_check_button_get_active (GTK_CHECK_BUTTON (button));
 
 	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "passwd-entry"));
+	gtk_entry_set_visibility (GTK_ENTRY (widget), visible);
+
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "gateway-psk-entry"));
 	gtk_entry_set_visibility (GTK_ENTRY (widget), visible);
 }
 
@@ -391,6 +430,22 @@ init_plugin_ui (StrongswanPluginUiWidget *self, NMConnection *connection, GError
 
 	init_chooser (priv->builder, settings, "certificate", "certificate-chooser",
 				  "certificate-button", "certificate-button-label");
+
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "gateway-psk-entry"));
+	value = nm_setting_vpn_get_secret (settings, "gateway-psk");
+	if (value)
+		gtk_editable_set_text (GTK_EDITABLE (widget), value);
+	g_signal_connect (G_OBJECT (widget), "changed", G_CALLBACK (settings_changed_cb), self);
+	init_password_icon (self, settings, "gateway-psk", "gateway-psk-entry");
+
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "server-auth-combo"));
+	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (widget), _("Certificate"));
+	gtk_combo_box_text_append_text (GTK_COMBO_BOX_TEXT (widget), _("Pre-shared key"));
+	value = nm_setting_vpn_get_data_item (settings, "remote-auth");
+	gtk_combo_box_set_active (GTK_COMBO_BOX (widget),
+							  g_strcmp0 (value, "psk") == 0 ? 1 : 0);
+	g_signal_connect (G_OBJECT (widget), "changed", G_CALLBACK (settings_changed_cb), self);
+	update_server_sensitive (priv);
 
 	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "remote-identity-entry"));
 	value = nm_setting_vpn_get_data_item (settings, "remote-identity");
@@ -691,6 +746,19 @@ update_connection (NMVpnEditor *iface,
 
 	save_entry (settings, priv->builder, "address-entry", "address");
 	save_file_chooser (settings, priv->builder, "certificate-chooser", "certificate");
+
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "server-auth-combo"));
+	if (gtk_combo_box_get_active (GTK_COMBO_BOX (widget)) == 1)
+	{
+		nm_setting_vpn_add_data_item (settings, "remote-auth", "psk");
+		save_password_and_flags (settings, priv->builder, "gateway-psk-entry",
+								 "gateway-psk");
+	}
+	else
+	{
+		nm_setting_vpn_add_data_item (settings, "remote-auth", "pubkey");
+	}
+
 	save_entry (settings, priv->builder, "remote-identity-entry", "remote-identity");
 	save_entry (settings, priv->builder, "server-port-entry", "server-port");
 	save_entry (settings, priv->builder, "local-identity-entry", "local-identity");
@@ -767,6 +835,9 @@ dispose (GObject *object)
 	GtkWidget *widget;
 
 	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "passwd-entry"));
+	g_signal_handlers_disconnect_by_func (G_OBJECT (widget), G_CALLBACK (password_storage_changed_cb), plugin);
+
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "gateway-psk-entry"));
 	g_signal_handlers_disconnect_by_func (G_OBJECT (widget), G_CALLBACK (password_storage_changed_cb), plugin);
 
 	if (priv->widget)

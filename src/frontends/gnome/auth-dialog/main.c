@@ -106,8 +106,53 @@ static void keyfile_print_stdout (GKeyFile *keyfile)
 	g_free (data);
 }
 
-static gboolean get_secrets(const char *type, const char *cert_source, const char *uuid, const char *name,
-							gboolean retry, gboolean allow_interaction, gboolean external_ui_mode,
+/**
+ * Build the prompt string for the given secret and report its minimum length.
+ * prompt_type is the kind of secret: "eap", "psk", "gateway-psk", or a
+ * certificate-based method (in which case cert_source distinguishes smartcard).
+ */
+static char *secret_prompt(const char *prompt_type, const char *cert_source,
+						   const char *name, guint32 *minlen)
+{
+	*minlen = 0;
+	if (!strcmp(prompt_type, "eap"))
+	{
+		return g_strdup_printf (_("EAP password required to establish VPN connection '%s'."),
+								name);
+	}
+	else if (!strcmp(prompt_type, "psk"))
+	{
+		*minlen = 20;
+		return g_strdup_printf (_("Pre-shared key required to establish VPN connection '%s' (min. 20 characters)."),
+								name);
+	}
+	else if (!strcmp(prompt_type, "gateway-psk"))
+	{
+		*minlen = 20;
+		return g_strdup_printf (_("Gateway pre-shared key required to establish VPN connection '%s' (min. 20 characters)."),
+								name);
+	}
+	else /* certificate auth of some kind */
+	{
+		if (!strcmp(cert_source, "smartcard"))
+		{
+			return g_strdup_printf (_("Smartcard PIN required to establish VPN connection '%s'."),
+									name);
+		}
+		return g_strdup_printf (_("Private key decryption password required to establish VPN connection '%s'."),
+								name);
+	}
+}
+
+/**
+ * Obtain a single secret named secret_name. prompt_type selects the prompt
+ * text (see secret_prompt()). In external UI mode the secret is described as an
+ * entry in the caller-provided keyfile instead of being prompted for.
+ */
+static gboolean get_secrets(const char *prompt_type, const char *secret_name,
+							const char *cert_source, const char *uuid, const char *name,
+							gboolean retry, gboolean allow_interaction,
+							GKeyFile *external_keyfile,
 							const char *in_pw, char **out_pw, NMSettingSecretFlags flags)
 {
 	NMAVpnPasswordDialog *dialog;
@@ -124,7 +169,7 @@ static gboolean get_secrets(const char *type, const char *cert_source, const cha
 		}
 		else
 		{
-			pw = keyring_lookup_secret (uuid, "password");
+			pw = keyring_lookup_secret (uuid, secret_name);
 		}
 	}
 	if (flags & NM_SETTING_SECRET_FLAG_NOT_REQUIRED)
@@ -132,44 +177,13 @@ static gboolean get_secrets(const char *type, const char *cert_source, const cha
 		g_free (pw);
 		return TRUE;
 	}
-	if (!strcmp(type, "eap"))
+	prompt = secret_prompt (prompt_type, cert_source, name, &minlen);
+	if (external_keyfile)
 	{
-		prompt = g_strdup_printf (_("EAP password required to establish VPN connection '%s'."),
-								  name);
-	}
-	else if (!strcmp(type, "psk"))
-	{
-		prompt = g_strdup_printf (_("Pre-shared key required to establish VPN connection '%s' (min. 20 characters)."),
-								  name);
-		minlen = 20;
-	}
-	else /* certificate auth of some kind */
-	{
-		if (!strcmp(cert_source, "smartcard"))
-		{
-			prompt = g_strdup_printf (_("Smartcard PIN required to establish VPN connection '%s'."),
-									  name);
-		}
-		else
-		{
-			prompt = g_strdup_printf (_("Private key decryption password required to establish VPN connection '%s'."),
-									  name);
-		}
-	}
-	if (external_ui_mode)
-	{
-		GKeyFile *keyfile;
-
-		keyfile = g_key_file_new ();
-
-		g_key_file_set_integer (keyfile, UI_KEYFILE_GROUP, "Version", 2);
-		g_key_file_set_string (keyfile, UI_KEYFILE_GROUP, "Description", prompt);
-		g_key_file_set_string (keyfile, UI_KEYFILE_GROUP, "Title", _("Authenticate VPN"));
-
-		keyfile_add_entry_info (keyfile, "password", pw ?: "", _("Password:"), TRUE, allow_interaction);
-
-		keyfile_print_stdout (keyfile);
-		g_key_file_unref (keyfile);
+		const char *label = !strcmp(prompt_type, "gateway-psk") ?
+							 _("Gateway pre-shared key:") : _("Password:");
+		keyfile_add_entry_info (external_keyfile, secret_name, pw ?: "",
+								label, TRUE, allow_interaction);
 		goto out;
 	}
 	else if (!allow_interaction ||
@@ -254,12 +268,12 @@ static void wait_for_quit (void)
 int main (int argc, char *argv[])
 {
 	gboolean retry = FALSE, allow_interaction = FALSE, external_ui_mode = FALSE;
-	gboolean need_secret = FALSE;
-	gchar *name = NULL, *uuid = NULL, *service = NULL, *pass = NULL;
+	gboolean need_secret = FALSE, gateway_psk = FALSE;
+	gchar *name = NULL, *uuid = NULL, *service = NULL, *pass = NULL, *gw_psk = NULL;
 	GHashTable *data = NULL, *secrets = NULL;
 	NMSettingSecretFlags flags = NM_SETTING_SECRET_FLAG_NONE;
 	GOptionContext *context;
-	char *agent, *type, *cert_source;
+	char *agent, *type, *cert_source, *remote_auth;
 	int status = 0;
 	GOptionEntry entries[] = {
 		{ "reprompt", 'r', 0, G_OPTION_ARG_NONE, &retry, "Reprompt for passwords", NULL},
@@ -310,6 +324,8 @@ int main (int argc, char *argv[])
 		goto out;
 	}
 	cert_source = g_hash_table_lookup (data, "cert-source") ?: type;
+	remote_auth = g_hash_table_lookup (data, "remote-auth");
+	gateway_psk = g_strcmp0 (remote_auth, "psk") == 0;
 
 	if (!strcmp(type, "cert") ||
 		!strcmp(type, "eap-tls") ||
@@ -375,17 +391,71 @@ int main (int argc, char *argv[])
 
 	if (need_secret ||
 		!strcmp(type, "eap") ||
-		!strcmp(type, "psk"))
+		!strcmp(type, "psk") ||
+		gateway_psk)
 	{
-		nm_vpn_service_plugin_get_secret_flags (secrets, "password", &flags);
-		if (!get_secrets(type, cert_source, uuid, name, retry, allow_interaction,
-						 external_ui_mode, g_hash_table_lookup (secrets, "password"), &pass, flags))
+		gboolean client_secret = need_secret || !strcmp(type, "eap") ||
+								 !strcmp(type, "psk");
+		const char *primary_type = client_secret ? type : "gateway-psk";
+		GKeyFile *keyfile = NULL;
+
+		if (external_ui_mode)
 		{
-			status = 1;
+			char *prompt;
+			guint32 minlen;
+
+			keyfile = g_key_file_new ();
+			prompt = secret_prompt (primary_type, cert_source, name, &minlen);
+			g_key_file_set_integer (keyfile, UI_KEYFILE_GROUP, "Version", 2);
+			g_key_file_set_string (keyfile, UI_KEYFILE_GROUP, "Description", prompt);
+			g_key_file_set_string (keyfile, UI_KEYFILE_GROUP, "Title", _("Authenticate VPN"));
+			g_free (prompt);
 		}
-		else if (!external_ui_mode)
+
+		if (client_secret)
 		{
-			print_last_secret("password", pass);
+			nm_vpn_service_plugin_get_secret_flags (secrets, "password", &flags);
+			if (!get_secrets(type, "password", cert_source, uuid, name, retry,
+							 allow_interaction, keyfile,
+							 g_hash_table_lookup (secrets, "password"), &pass, flags))
+			{
+				status = 1;
+			}
+		}
+		if (status == 0 && gateway_psk)
+		{
+			nm_vpn_service_plugin_get_secret_flags (secrets, "gateway-psk", &flags);
+			if (!get_secrets("gateway-psk", "gateway-psk", cert_source, uuid, name,
+							 retry, allow_interaction, keyfile,
+							 g_hash_table_lookup (secrets, "gateway-psk"), &gw_psk, flags))
+			{
+				status = 1;
+			}
+		}
+
+		if (external_ui_mode)
+		{
+			if (status == 0)
+			{
+				keyfile_print_stdout (keyfile);
+			}
+			g_key_file_unref (keyfile);
+		}
+		else if (status == 0)
+		{
+			if (client_secret && gateway_psk)
+			{
+				print_secret ("password", pass);
+				print_last_secret ("gateway-psk", gw_psk);
+			}
+			else if (client_secret)
+			{
+				print_last_secret ("password", pass);
+			}
+			else
+			{
+				print_last_secret ("gateway-psk", gw_psk);
+			}
 			wait_for_quit ();
 		}
 	}
