@@ -21,15 +21,25 @@
 
 #include "nm_service.h"
 
+#include <stdlib.h>
+
 #include <daemon.h>
 #include <networking/host.h>
 #include <utils/identification.h>
 #include <config/peer_cfg.h>
 #include <credentials/certificates/x509.h>
+#include <encoding/payloads/notify_payload.h>
 #include <networking/tun_device.h>
 #include <plugins/kernel_netlink/kernel_netlink_xfrmi.h>
 
 #define XFRMI_DEFAULT_MTU 1400
+
+/**
+ * Proprietary FortiGate IKEv2 notify ("Network Overlay ID") sent in IKE_SA_INIT
+ * so the gateway can select the correct dial-up config when multiple tunnels
+ * share the same address. The value is encoded as a minimal big-endian integer.
+ */
+#define FORTINET_NETWORK_OVERLAY_ID 61520
 
 /**
  * Private data of NMStrongswanPlugin
@@ -55,6 +65,8 @@ typedef struct {
 	tun_device_t *tun;
 	/* name of the connection */
 	char *name;
+	/* encoded FortiGate network ID to send in IKE_SA_INIT, or chunk_empty */
+	chunk_t network_id;
 	/* temporary files for safe access */
 	GPtrArray *safe_files;
 	/* already requested the ssh-agent socket for the current connection */
@@ -424,6 +436,42 @@ METHOD(listener_t, child_updown, bool,
 		signal_ip_config(this->plugin, ike_sa, child_sa);
 	}
 	return TRUE;
+}
+
+METHOD(listener_t, message, bool,
+	NMStrongswanPluginPrivate *this, ike_sa_t *ike_sa, message_t *message,
+	bool incoming, bool plain)
+{
+	if (plain && !incoming && this->ike_sa == ike_sa &&
+		this->network_id.len &&
+		message->get_exchange_type(message) == IKE_SA_INIT)
+	{
+		message->add_notify(message, FALSE,
+							(notify_type_t)FORTINET_NETWORK_OVERLAY_ID,
+							this->network_id);
+	}
+	return TRUE;
+}
+
+/**
+ * Encode a network ID as a minimal big-endian integer, matching the encoding
+ * observed from FortiClient (e.g. 2 -> 0x02).
+ */
+static chunk_t encode_network_id(uint64_t id)
+{
+	uint8_t buf[sizeof(uint64_t)];
+	int i, start;
+
+	for (i = sizeof(buf) - 1; i >= 0; i--)
+	{
+		buf[i] = id & 0xff;
+		id >>= 8;
+	}
+	/* strip leading zero bytes, but keep at least one */
+	for (start = 0; start < sizeof(buf) - 1 && buf[start] == 0; start++)
+	{
+	}
+	return chunk_clone(chunk_create(buf + start, sizeof(buf) - start));
 }
 
 /**
@@ -927,6 +975,19 @@ static gboolean connect_(NMVpnServicePlugin *plugin, NMConnection *connection,
 	str = nm_setting_vpn_get_data_item(vpn, "ipcomp");
 	child.options |= streq(str, "yes") ? OPT_IPCOMP : 0;
 
+	/* optional FortiGate network ID to announce in IKE_SA_INIT */
+	chunk_free(&priv->network_id);
+	str = nm_setting_vpn_get_data_item(vpn, "network-id");
+	if (str && strlen(str))
+	{
+		priv->network_id = encode_network_id(strtoull(str, NULL, 0));
+		priv->listener.message = _message;
+	}
+	else
+	{
+		priv->listener.message = NULL;
+	}
+
 	/**
 	 * Register credentials
 	 */
@@ -1380,6 +1441,7 @@ static void nm_strongswan_plugin_dispose(GObject *obj)
 	priv = NM_STRONGSWAN_PLUGIN_GET_PRIVATE(plugin);
 	delete_interface(priv);
 	free(priv->name);
+	chunk_free(&priv->network_id);
 	for (i = 0; i < priv->safe_files->len; i++)
 	{
 		unlink((const char *)priv->safe_files->pdata[i]);
