@@ -459,6 +459,12 @@ init_plugin_ui (StrongswanPluginUiWidget *self, NMConnection *connection, GError
 		gtk_editable_set_text (GTK_EDITABLE (widget), value);
 	g_signal_connect (G_OBJECT (widget), "changed", G_CALLBACK (settings_changed_cb), self);
 
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "network-id-entry"));
+	value = nm_setting_vpn_get_data_item (settings, "network-id");
+	if (value)
+		gtk_editable_set_text (GTK_EDITABLE (widget), value);
+	g_signal_connect (G_OBJECT (widget), "changed", G_CALLBACK (settings_changed_cb), self);
+
 	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "local-identity-entry"));
 	value = nm_setting_vpn_get_data_item (settings, "local-identity");
 	/* fallback to the username for old PSK configs */
@@ -761,6 +767,7 @@ update_connection (NMVpnEditor *iface,
 
 	save_entry (settings, priv->builder, "remote-identity-entry", "remote-identity");
 	save_entry (settings, priv->builder, "server-port-entry", "server-port");
+	save_entry (settings, priv->builder, "network-id-entry", "network-id");
 	save_entry (settings, priv->builder, "local-identity-entry", "local-identity");
 
 	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "method-combo"));

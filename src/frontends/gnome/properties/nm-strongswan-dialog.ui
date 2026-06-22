@@ -621,7 +621,7 @@
               </packing>
             </child>
             <child>
-              <!-- n-columns=2 n-rows=1 -->
+              <!-- n-columns=2 n-rows=2 -->
               <object class="GtkGrid">
                 <property name="visible">True</property>
                 <property name="can-focus">False</property>
@@ -653,6 +653,33 @@
                   <packing>
                     <property name="left-attach">1</property>
                     <property name="top-attach">0</property>
+                  </packing>
+                </child>
+                <child>
+                  <object class="GtkLabel" id="network-id-label">
+                    <property name="visible">True</property>
+                    <property name="can-focus">False</property>
+                    <property name="label" translatable="yes">_Network ID:</property>
+                    <property name="use-underline">True</property>
+                    <property name="xalign">0</property>
+                  </object>
+                  <packing>
+                    <property name="left-attach">0</property>
+                    <property name="top-attach">1</property>
+                  </packing>
+                </child>
+                <child>
+                  <object class="GtkEntry" id="network-id-entry">
+                    <property name="visible">True</property>
+                    <property name="can-focus">True</property>
+                    <property name="tooltip-text" translatable="yes">Numeric network ID sent to the server in the first exchange (sent as a FortiGate "Network Overlay ID" notify). Required by some gateways to select the correct configuration when multiple tunnels share the same address.</property>
+                    <property name="hexpand">True</property>
+                    <property name="invisible-char">•</property>
+                    <property name="placeholder-text" translatable="yes">(None)</property>
+                  </object>
+                  <packing>
+                    <property name="left-attach">1</property>
+                    <property name="top-attach">1</property>
                   </packing>
                 </child>
               </object>
