@@ -1061,8 +1061,36 @@ static gboolean connect_(NMVpnServicePlugin *plugin, NMConnection *connection,
 	}
 
 	auth = auth_cfg_create();
-	if (streq(method, "psk"))
+	str = nm_setting_vpn_get_data_item(vpn, "remote-auth");
+	if (streq(str, "psk") || (!str && streq(method, "psk")))
 	{
+		const char *psk;
+
+		psk = nm_setting_vpn_get_secret(vpn, "gateway-psk");
+		/* fall back to the password for legacy mutual-PSK configs that did not
+		 * register a separate gateway PSK */
+		if (!psk && streq(method, "psk"))
+		{
+			psk = nm_setting_vpn_get_secret(vpn, "password");
+		}
+		if (!psk || strlen(psk) < 20)
+		{
+			g_set_error(err, NM_VPN_PLUGIN_ERROR,
+						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
+						"Gateway pre-shared key is missing or too short.");
+			auth->destroy(auth);
+			peer_cfg->destroy(peer_cfg);
+			ike_cfg->destroy(ike_cfg);
+			gateway->destroy(gateway);
+			return FALSE;
+		}
+		/* register a dedicated gateway PSK; the legacy mutual-PSK case already
+		 * registered it as user/pass via add_auth_cfg_pw() */
+		if (!streq(method, "psk"))
+		{
+			priv->creds->set_psk(priv->creds,
+								 loose_gateway_id ? NULL : gateway, (char*)psk);
+		}
 		auth->add(auth, AUTH_RULE_AUTH_CLASS, AUTH_CLASS_PSK);
 	}
 	else
@@ -1251,6 +1279,13 @@ static gboolean need_secrets(NMVpnServicePlugin *plugin, NMConnection *connectio
 		{
 			need_secret = !nm_setting_vpn_get_secret(settings, "password");
 		}
+	}
+	/* an additional gateway PSK is required for asymmetric auth (e.g. gateway
+	 * PSK with client EAP) */
+	if (streq(nm_setting_vpn_get_data_item(settings, "remote-auth"), "psk") &&
+		!nm_setting_vpn_get_secret(settings, "gateway-psk"))
+	{
+		need_secret = TRUE;
 	}
 	*setting_name = NM_SETTING_VPN_SETTING_NAME;
 	return need_secret;

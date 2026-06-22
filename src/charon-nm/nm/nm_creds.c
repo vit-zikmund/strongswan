@@ -50,6 +50,17 @@ struct private_nm_creds_t {
 	char *pass;
 
 	/**
+	 * Pre-shared key to authenticate the gateway, separate from the EAP/user
+	 * password above. Used for asymmetric auth (e.g. gateway PSK, client EAP).
+	 */
+	char *psk;
+
+	/**
+	 * Identity the gateway PSK is bound to (the gateway's identity), or NULL
+	 */
+	identification_t *psk_id;
+
+	/**
 	 * Private key decryption password / smartcard pin
 	 */
 	char *keypass;
@@ -238,8 +249,20 @@ METHOD(credential_set_t, create_shared_enumerator, enumerator_t*,
 
 	switch (type)
 	{
-		case SHARED_EAP:
 		case SHARED_IKE:
+			if (this->psk)
+			{	/* dedicated gateway PSK (e.g. gateway PSK + client EAP) */
+				if (other && this->psk_id &&
+					!other->matches(other, this->psk_id))
+				{
+					goto no_secret;
+				}
+				key = chunk_create(this->psk, strlen(this->psk));
+				break;
+			}
+			/* fall back to a PSK stored as user/pass (legacy mutual PSK) */
+			/* FALL */
+		case SHARED_EAP:
 			if (!this->pass || !this->user)
 			{
 				goto no_secret;
@@ -359,6 +382,17 @@ METHOD(nm_creds_t, set_username_password, void,
 	this->lock->unlock(this->lock);
 }
 
+METHOD(nm_creds_t, set_psk, void,
+	private_nm_creds_t *this, identification_t *id, char *psk)
+{
+	this->lock->write_lock(this->lock);
+	DESTROY_IF(this->psk_id);
+	this->psk_id = id ? id->clone(id) : NULL;
+	free(this->psk);
+	this->psk = strdupnull(psk);
+	this->lock->unlock(this->lock);
+}
+
 METHOD(nm_creds_t, set_key_password, void,
 	private_nm_creds_t *this, char *password)
 {
@@ -401,6 +435,8 @@ METHOD(nm_creds_t, clear, void,
 	}
 	DESTROY_IF(this->user);
 	free(this->pass);
+	DESTROY_IF(this->psk_id);
+	free(this->psk);
 	free(this->keypass);
 	free(this->keyid.ptr);
 	DESTROY_IF(this->usercert);
@@ -409,6 +445,8 @@ METHOD(nm_creds_t, clear, void,
 	this->usercert = NULL;
 	this->pass = NULL;
 	this->user = NULL;
+	this->psk = NULL;
+	this->psk_id = NULL;
 	this->keypass = NULL;
 	this->keyid = chunk_empty;
 }
@@ -441,6 +479,7 @@ nm_creds_t *nm_creds_create()
 			.add_certificate = _add_certificate,
 			.load_ca_dir = _load_ca_dir,
 			.set_username_password = _set_username_password,
+			.set_psk = _set_psk,
 			.set_key_password = _set_key_password,
 			.set_pin = _set_pin,
 			.set_cert_and_key = _set_cert_and_key,

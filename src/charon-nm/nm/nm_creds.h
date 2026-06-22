@@ -59,6 +59,17 @@ struct nm_creds_t {
 								  char *password);
 
 	/**
+	 * Set the pre-shared key used to authenticate the gateway.
+	 *
+	 * This is independent of the username/password above and is used for
+	 * asymmetric authentication (e.g. gateway PSK with client EAP).
+	 *
+	 * @param id		identity of the gateway the PSK is bound to, or NULL
+	 * @param psk		pre-shared key to use
+	 */
+	void (*set_psk)(nm_creds_t *this, identification_t *id, char *psk);
+
+	/**
 	 * Set the passphrase to use for private key decryption.
 	 *
 	 * @param password	password to use
