@@ -454,27 +454,6 @@ METHOD(listener_t, message, bool,
 }
 
 /**
- * Encode a network ID as a minimal big-endian integer, matching the encoding
- * observed from FortiClient (e.g. 2 -> 0x02).
- */
-static chunk_t encode_network_id(uint64_t id)
-{
-	uint8_t buf[sizeof(uint64_t)];
-	int i, start;
-
-	for (i = sizeof(buf) - 1; i >= 0; i--)
-	{
-		buf[i] = id & 0xff;
-		id >>= 8;
-	}
-	/* strip leading zero bytes, but keep at least one */
-	for (start = 0; start < sizeof(buf) - 1 && buf[start] == 0; start++)
-	{
-	}
-	return chunk_clone(chunk_create(buf + start, sizeof(buf) - start));
-}
-
-/**
  * Determine the user configured in the given connection (if any).
  */
 static const char *get_connection_permission_user(NMConnection *connection)
@@ -975,17 +954,24 @@ static gboolean connect_(NMVpnServicePlugin *plugin, NMConnection *connection,
 	str = nm_setting_vpn_get_data_item(vpn, "ipcomp");
 	child.options |= streq(str, "yes") ? OPT_IPCOMP : 0;
 
-	/* optional FortiGate network ID to announce in IKE_SA_INIT */
+	/* optional FortiGate network ID to announce in IKE_SA_INIT, a single byte */
 	chunk_free(&priv->network_id);
+	priv->listener.message = NULL;
 	str = nm_setting_vpn_get_data_item(vpn, "network-id");
 	if (str && strlen(str))
 	{
-		priv->network_id = encode_network_id(strtoull(str, NULL, 0));
+		char *end;
+		unsigned long id = strtoul(str, &end, 0);
+
+		if (*end || id > 0xff)
+		{
+			g_set_error(err, NM_VPN_PLUGIN_ERROR,
+						NM_VPN_PLUGIN_ERROR_BAD_ARGUMENTS,
+						"Invalid FortiGate network ID '%s', expected 0-255.", str);
+			return FALSE;
+		}
+		priv->network_id = chunk_clone(chunk_from_chars((u_char)id));
 		priv->listener.message = _message;
-	}
-	else
-	{
-		priv->listener.message = NULL;
 	}
 
 	/**
