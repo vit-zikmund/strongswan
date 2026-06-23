@@ -22,6 +22,8 @@
 #include <config.h>
 #endif
 
+#include <stdlib.h>
+
 #include <glib.h>
 #include <glib/gi18n-lib.h>
 #include <gtk/gtk.h>
@@ -160,6 +162,20 @@ check_validity (StrongswanPluginUiWidget *self, GError **error)
 				break;
 			default:
 				break;
+		}
+	}
+	widget = GTK_WIDGET (gtk_builder_get_object (priv->builder, "network-id-entry"));
+	str = (char *) gtk_editable_get_text (GTK_EDITABLE (widget));
+	if (str && strlen (str)) {
+		char *end;
+		unsigned long id = strtoul (str, &end, 0);
+
+		if (*end || id > 0xff) {
+			g_set_error (error,
+						 STRONGSWAN_PLUGIN_UI_ERROR,
+						 STRONGSWAN_PLUGIN_UI_ERROR_INVALID_PROPERTY,
+						 "network ID must be 0-255");
+			return FALSE;
 		}
 	}
 	return TRUE;
